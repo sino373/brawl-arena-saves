@@ -61,7 +61,27 @@ const send = (res, code, obj) => {
   res.end(JSON.stringify(obj));
 };
 
+const crypto=require('crypto');
+const ADMIN_SALT=process.env.ADMIN_SALT||'x',ADMIN_HASH=process.env.ADMIN_HASH||'x';
+const admTok=new Map(),admIp=new Map();
+function admHandle(req,res){
+  if(req.url!=='/admin'&&req.url!=='/admin-check')return false;
+  let b='';req.on('data',c=>{b+=c;if(b.length>4096)req.destroy()});
+  req.on('end',()=>{let m={};try{m=JSON.parse(b||'{}')}catch(e){return send(res,400,{error:'bad json'})}
+    const ip=(req.headers['x-forwarded-for']||req.socket.remoteAddress||'?').split(',')[0].trim(),now=Date.now();
+    if(req.url==='/admin-check'){const e=admTok.get(String(m.t||''));return send(res,e&&e>now?200:403,e&&e>now?{ok:true}:{error:'bad token'})}
+    const g=admIp.get(ip)||{n:0,until:0};
+    if(g.until>now)return send(res,429,{error:'Too many tries. Wait '+Math.ceil((g.until-now)/1000)+'s.'});
+    const got=crypto.createHash('sha256').update(ADMIN_SALT+':'+String(m.ch)).digest('hex');
+    if(got!==ADMIN_HASH){g.n++;if(g.n>=5){g.until=now+300000;g.n=0}admIp.set(ip,g);
+      return setTimeout(()=>send(res,403,{error:'Wrong admin password.'}),400)}
+    admIp.delete(ip);const t=crypto.randomBytes(18).toString('hex');admTok.set(t,now+10800000);
+    for(const[k,v]of admTok)if(v<now)admTok.delete(k);
+    send(res,200,{ok:true,t,exp:now+10800000})});
+  return true}
+
 const server = http.createServer((req, res) => {
+  if (admHandle(req, res)) return;
   if (req.method === 'OPTIONS') return send(res, 204, {});
   if (req.url === '/health') {
     return store.count().then(n => send(res, 200, { ok: true, storage: mode, accounts: n }))
